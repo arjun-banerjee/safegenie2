@@ -1,5 +1,5 @@
 import os
-from biotite.structure import tm_score
+from biotite.structure import tm_score, superimpose_structural_homologs
 from biotite.structure.io.pdb import PDBFile
 
 def load_structure(pdb_path):
@@ -23,13 +23,18 @@ def compute_tm_score(ref_path, sample_path):
     # Load sample structures
     sample_structure = load_structure(sample_path)
     
+    # Superimpose sample onto reference
+    superimposed, _, ref_indices, sub_indices = superimpose_structural_homologs(
+        ref_structure, sample_structure, max_iterations=1
+    )
+    
     # Compute TM-score
-    score = tm_score(ref_structure, sample_structure)
+    score = tm_score(ref_structure, superimposed, ref_indices, sub_indices)
     return score
 
 def main():
-    ref_path = "/Users/ethantam/desktop/1QLZ.pdb"
-    sample_path = "/Users/ethantam/desktop/7X1U.pdb"
+    ref_path = "/home/ubuntu/safegenie2/data/pdbs/1QLZ.pdb"
+    sample_path = "/home/ubuntu/safegenie2/data/pdbs/7X1U.pdb"
     score = compute_tm_score(ref_path, sample_path)
     print(f"TM-score between {os.path.basename(ref_path)} and {os.path.basename(sample_path)}: {score:.4f}")
 
