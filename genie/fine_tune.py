@@ -59,14 +59,19 @@ class GenieFineTuner(LightningModule):
         self.motif_pdb_paths = motif_pdb_paths or []
         
         # Load pretrained model
+        print("Loading pretrained model...")
         self.model = self._load_pretrained_model(pretrained_model_path)
+        print("✓ Pretrained model loaded successfully")
         
         # Create frozen reference model (original weights)
+        print("Loading frozen reference model...")
         self.frozen_model = self._load_pretrained_model(pretrained_model_path)
         self.frozen_model.eval()
         for param in self.frozen_model.parameters():
             param.requires_grad = False
+        print("✓ Frozen reference model loaded and frozen successfully")
             
+        # Move models to device (will be done in setup_schedule)
         # Setup diffusion schedule
         self.setup_schedule()
         
@@ -75,27 +80,42 @@ class GenieFineTuner(LightningModule):
 
     def _load_pretrained_model(self, model_path):
         """Load pretrained model from checkpoint"""
-        # This would need to be implemented based on your model loading logic
-        # For now, creating a new model with the same config
-        model = Denoiser(
-            **self.config.model,
-            n_timestep=self.config.diffusion['n_timestep'],
-            max_n_res=self.config.io['max_n_res'],
-            max_n_chain=self.config.io['max_n_chain']
-        )
+        from genie.diffusion.genie import Genie
         
-        # Load pretrained weights if available
-        if os.path.exists(model_path):
-            checkpoint = torch.load(model_path, map_location='cpu')
-            if 'state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['state_dict'])
-            else:
-                model.load_state_dict(checkpoint)
+        # Load configuration
+        config = self.config
         
-        return model
+        # Check if it's a .ckpt file (PyTorch Lightning checkpoint)
+        if model_path.endswith('.ckpt'):
+            print(f'Loading checkpoint: {model_path}')
+            return Genie.load_from_checkpoint(model_path, config=config)
+        else:
+            # Fallback for .pt files
+            model = Denoiser(
+                **self.config.model,
+                n_timestep=self.config.diffusion['n_timestep'],
+                max_n_res=self.config.io['max_n_res'],
+                max_n_chain=self.config.io['max_n_chain']
+            )
+            
+            # Load pretrained weights if available
+            if os.path.exists(model_path):
+                checkpoint = torch.load(model_path, map_location='cpu')
+                if 'state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['state_dict'])
+                else:
+                    model.load_state_dict(checkpoint)
+            
+            return model
 
     def setup_schedule(self):
         """Set up variance schedule and precompute terms"""
+        # Move models to device first
+        print(f"Moving models to device: {self.device}")
+        self.model = self.model.to(self.device)
+        self.frozen_model = self.frozen_model.to(self.device)
+        print("✓ Models moved to device successfully")
+        
         self.betas = get_betas(
             self.config.diffusion['n_timestep'],
             self.config.diffusion['schedule']
@@ -117,6 +137,7 @@ class GenieFineTuner(LightningModule):
         self.sqrt_one_minus_alphas_cumprod_prev = torch.sqrt(1. - self.alphas_cumprod_prev)
         self.sqrt_recip_alphas_cumprod = 1. / self.sqrt_alphas_cumprod
         self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1. / self.alphas_cumprod - 1)
+        print("✓ Diffusion schedule setup completed")
 
     def generate_conditioned_features(self, sequence_length):
         """
@@ -132,24 +153,25 @@ class GenieFineTuner(LightningModule):
         if self.motif_pdb_paths:
             # Randomly select a motif PDB file
             motif_pdb_path = np.random.choice(self.motif_pdb_paths)
+            print(f"        Using motif PDB: {motif_pdb_path}")
             try:
                 # Create features from real motif PDB
-                np_features = create_np_features_from_motif_pdb(motif_pdb_path)
+                motif_np_features = create_np_features_from_motif_pdb(motif_pdb_path)
+                print(f"        Motif PDB has {motif_np_features['num_residues']} residues")
                 
-                # If the motif is too long, truncate it
-                if np_features['num_residues'] > sequence_length:
-                    # Truncate to fit sequence length
-                    np_features['aatype'] = np_features['aatype'][:sequence_length]
-                    np_features['atom_positions'] = np_features['atom_positions'][:sequence_length]
-                    np_features['residue_mask'] = np_features['residue_mask'][:sequence_length]
-                    np_features['residue_index'] = np_features['residue_index'][:sequence_length]
-                    np_features['chain_index'] = np_features['chain_index'][:sequence_length]
-                    np_features['fixed_sequence_mask'] = np_features['fixed_sequence_mask'][:sequence_length]
-                    np_features['fixed_structure_mask'] = np_features['fixed_structure_mask'][:sequence_length, :sequence_length]
-                    np_features['fixed_group'] = np_features['fixed_group'][:sequence_length]
-                    np_features['interface_mask'] = np_features['interface_mask'][:sequence_length]
-                    np_features['num_residues'] = sequence_length
-                    np_features['num_residues_per_chain'] = np.array([sequence_length])
+                # Always create features with the exact requested sequence length
+                np_features = create_empty_np_features([sequence_length])
+                
+                # Copy motif information if it fits
+                motif_length = min(motif_np_features['num_residues'], sequence_length)
+                print(f"        Copying {motif_length} motif residues to sequence of length {sequence_length}")
+                if motif_length > 0:
+                    # Copy motif data to the beginning of the sequence
+                    np_features['aatype'][:motif_length] = motif_np_features['aatype'][:motif_length]
+                    np_features['atom_positions'][:motif_length] = motif_np_features['atom_positions'][:motif_length]
+                    np_features['fixed_sequence_mask'][:motif_length] = 1.0
+                    np_features['fixed_structure_mask'][:motif_length, :motif_length] = motif_np_features['fixed_structure_mask'][:motif_length, :motif_length]
+                    np_features['fixed_group'][:motif_length] = motif_np_features['fixed_group'][:motif_length]
                 
                 # Convert to tensor and batch
                 features = convert_np_features_to_tensor(
@@ -158,10 +180,11 @@ class GenieFineTuner(LightningModule):
                 return features
                 
             except Exception as e:
-                print(f"Warning: Could not load motif PDB {motif_pdb_path}: {e}")
-                print("Falling back to synthetic motif generation")
+                print(f"        Warning: Could not load motif PDB {motif_pdb_path}: {e}")
+                print("        Falling back to synthetic motif generation")
         
         # Fallback: Create synthetic motif features
+        print(f"        Creating synthetic conditioned features for length {sequence_length}")
         return self._create_synthetic_conditioned_features(sequence_length)
     
     def _create_synthetic_conditioned_features(self, sequence_length):
@@ -206,6 +229,7 @@ class GenieFineTuner(LightningModule):
         Returns:
             features: Dictionary containing unconditioned features
         """
+        print(f"        Creating unconditioned features for length {sequence_length}")
         # Create empty features using Genie 2 utilities
         np_features = create_empty_np_features([sequence_length])
         
@@ -261,54 +285,70 @@ class GenieFineTuner(LightningModule):
         """
         # Generate random sequence length
         sequence_length = torch.randint(50, self.max_length + 1, (1,)).item()
+        print(f"  Step {batch_idx}: Generated sequence length = {sequence_length}")
         
         # Sample timesteps
         timesteps = torch.randint(
             1, self.config.diffusion['n_timestep'] + 1,
             size=(self.num_samples_per_step,)
         ).to(self.device)
+        print(f"  Step {batch_idx}: Sampled timesteps = {timesteps.cpu().numpy()}")
         
         total_loss = 0.0
         
         for i in range(self.num_samples_per_step):
+            print(f"    Sample {i+1}/{self.num_samples_per_step}:")
+            
             # Generate conditioned features (with motif) using proper Genie 2 approach
+            print(f"      Generating conditioned features...")
             conditioned_features = self.generate_conditioned_features(sequence_length)
+            print(f"      Conditioned features shape: {conditioned_features['atom_positions'].shape}")
             
             # Generate unconditioned features (no motif) using proper Genie 2 approach
+            print(f"      Generating unconditioned features...")
             unconditioned_features = self.generate_unconditioned_features(sequence_length)
+            print(f"      Unconditioned features shape: {unconditioned_features['atom_positions'].shape}")
             
             # Add noise
+            print(f"      Adding noise at timestep {timesteps[i].item()}...")
             conditioned_features_noisy, ts_cond, noise_cond = self.add_noise(
                 conditioned_features, timesteps[i:i+1]
             )
             unconditioned_features_noisy, ts_uncond, noise_uncond = self.add_noise(
                 unconditioned_features, timesteps[i:i+1]
             )
+            print(f"      Noisy features shapes - cond: {conditioned_features_noisy['atom_positions'].shape}, uncond: {unconditioned_features_noisy['atom_positions'].shape}")
             
             # Sample frozen model twice (conditioned and unconditioned)
+            print(f"      Running frozen model predictions...")
             with torch.no_grad():
                 # Conditioned prediction from frozen model
-                frozen_cond_output = self.frozen_model(ts_cond, timesteps[i:i+1], conditioned_features_noisy)
-                frozen_cond_noise = frozen_cond_output['z']
+                frozen_cond_noise = self.frozen_model.model(ts_cond, timesteps[i:i+1], conditioned_features_noisy)['z']
+                print(f"      Frozen conditioned noise shape: {frozen_cond_noise.shape}")
                 
                 # Unconditioned prediction from frozen model
-                frozen_uncond_output = self.frozen_model(ts_uncond, timesteps[i:i+1], unconditioned_features_noisy)
-                frozen_uncond_noise = frozen_uncond_output['z']
+                frozen_uncond_noise = self.frozen_model.model(ts_uncond, timesteps[i:i+1], unconditioned_features_noisy)['z']
+                print(f"      Frozen unconditioned noise shape: {frozen_uncond_noise.shape}")
             
             # Compute target using the concept erasure formula
             # Target = ε_θ*(x_t, t) - η[ε_θ*(x_t, c, t) - ε_θ*(x_t, t)]
+            print(f"      Computing guidance vector and target...")
             guidance_vector = frozen_cond_noise - frozen_uncond_noise
             target_noise = frozen_uncond_noise - self.eta * guidance_vector
+            print(f"      Guidance vector shape: {guidance_vector.shape}, Target noise shape: {target_noise.shape}")
             
             # Sample fine-tuned model (conditioned)
-            fine_tuned_output = self.model(ts_cond, timesteps[i:i+1], conditioned_features_noisy)
-            fine_tuned_noise = fine_tuned_output['z']
+            print(f"      Running fine-tuned model prediction...")
+            fine_tuned_noise = self.model.model(ts_cond, timesteps[i:i+1], conditioned_features_noisy)['z']
+            print(f"      Fine-tuned noise shape: {fine_tuned_noise.shape}")
             
             # Compute L2 loss
             loss = self.loss_fn(fine_tuned_noise, target_noise)
+            print(f"      Loss for sample {i+1}: {loss.item():.6f}")
             total_loss += loss
         
         avg_loss = total_loss / self.num_samples_per_step
+        print(f"  Step {batch_idx}: Average loss = {avg_loss.item():.6f}")
         
         # Logging
         self.log('fine_tune_loss', avg_loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -332,14 +372,24 @@ class GenieFineTuner(LightningModule):
             num_epochs: Number of epochs to fine-tune
             save_path: Path to save fine-tuned model
         """
+        print(f"\n🚀 Starting fine-tuning for {num_epochs} epochs...")
+        print(f"   - Learning rate: {self.learning_rate}")
+        print(f"   - Eta (concept adjustment strength): {self.eta}")
+        print(f"   - Max sequence length: {self.max_length}")
+        print(f"   - Samples per step: {self.num_samples_per_step}")
+        print(f"   - Device: {self.device}")
+        
         self.train()
         
         optimizer = self.configure_optimizers()
+        print(f"✓ Optimizer configured: {type(optimizer).__name__}")
         
         # Create dummy dataset for training loop
         dummy_batch = [None] * 1000  # Dummy batches
+        print(f"✓ Created {len(dummy_batch)} dummy batches for training")
         
         for epoch in range(num_epochs):
+            print(f"\n📚 Epoch {epoch+1}/{num_epochs}")
             epoch_loss = 0.0
             
             for batch_idx, _ in enumerate(tqdm(dummy_batch, desc=f"Epoch {epoch+1}/{num_epochs}")):
@@ -357,7 +407,8 @@ class GenieFineTuner(LightningModule):
                 epoch_loss += loss.item()
             
             avg_epoch_loss = epoch_loss / len(dummy_batch)
-            print(f"Epoch {epoch+1}/{num_epochs}, Average Loss: {avg_epoch_loss:.6f}")
+            print(f"\n📊 Epoch {epoch+1}/{num_epochs} completed!")
+            print(f"   Average Loss: {avg_epoch_loss:.6f}")
             
             # Save checkpoint
             if save_path and (epoch + 1) % 10 == 0:
@@ -369,7 +420,7 @@ class GenieFineTuner(LightningModule):
                     'loss': avg_epoch_loss,
                     'eta': self.eta
                 }, checkpoint_path)
-                print(f"Saved checkpoint: {checkpoint_path}")
+                print(f"💾 Saved checkpoint: {checkpoint_path}")
 
     def save_model(self, save_path):
         """Save the fine-tuned model"""
@@ -385,19 +436,21 @@ def main():
     """Example usage of the fine-tuner"""
     from genie.config import Config
     
+    print("🔧 Initializing Genie Fine-Tuner...")
+    
     # Load configuration
     config = Config()
+    print("✓ Configuration loaded")
     
     # Define motif PDB paths for conditioning (optional)
     motif_pdb_paths = [
-        "data/design25/1prw.pdb",
-        "data/design25/1qjg.pdb", 
-        "data/design25/2kl8.pdb"
+        "../data/design25/1prw.pdb",
     ]
     
     # Initialize fine-tuner
+    print("🚀 Initializing fine-tuner...")
     fine_tuner = GenieFineTuner(
-        pretrained_model_path="path/to/pretrained/model.pt",
+        pretrained_model_path="../results/base/checkpoints/epoch=40.ckpt",
         config=config,
         eta=1.0,  # Adjust this to control concept adjustment strength
         learning_rate=1e-5,
@@ -405,10 +458,11 @@ def main():
         num_samples_per_step=4,
         motif_pdb_paths=motif_pdb_paths  # Use real motif PDBs for conditioning
     )
+    print("✓ Fine-tuner initialized successfully!")
     
     # Run fine-tuning
     fine_tuner.fine_tune(
-        num_epochs=100,
+        num_epochs=1,
         save_path="fine_tuned_models"
     )
     
