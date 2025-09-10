@@ -12,22 +12,19 @@ from genie.utils.affine_utils import T
 from genie.utils.geo_utils import compute_frenet_frames
 from genie.utils.feat_utils import (
     prepare_tensor_features,
-    create_np_features_from_motif_pdb,
+    create_np_features_from_motif_pdb_spec,
     create_empty_np_features,
     convert_np_features_to_tensor,
     batchify_np_features
 )
+import matplotlib.pyplot as plt
+
 
 
 class GenieFineTuner(LightningModule):
     """
     Fine-tuning class for Genie 2 model that implements concept erasure/adjustment
-    through double sampling and L2/MSE loss optimization.
-    
-    This follows the approach described in the concept erasure paper where:
-    1. Sample the original model twice (conditioned and unconditioned)
-    2. Compute target using: ε_θ*(x_t, t) - η[ε_θ*(x_t, c, t) - ε_θ*(x_t, t)]
-    3. Optimize via L2 loss to make fine-tuned model match this target
+    with proper motif scaffolding support.
     """
 
     def __init__(
@@ -36,42 +33,35 @@ class GenieFineTuner(LightningModule):
         config,
         eta=1.0,
         learning_rate=1e-5,
+        min_length=150,
         max_length=256,
         num_samples_per_step=4,
-        motif_pdb_paths=None
+        motif_scaffolding_files=None
     ):
         """
         Args:
-            pretrained_model_path: Path to the pretrained Genie 2 model
-            config: Configuration object for the model
-            eta: Power factor controlling the strength of concept adjustment
-            learning_rate: Learning rate for fine-tuning
-            max_length: Maximum sequence length for fine-tuning
-            num_samples_per_step: Number of samples to generate per optimization step
-            motif_pdb_paths: List of paths to motif PDB files for conditioning
+            motif_scaffolding_files: List of paths to motif scaffolding problem files
         """
         super(GenieFineTuner, self).__init__()
         self.config = config
         self.eta = eta
         self.learning_rate = learning_rate
+        self.min_length = min_length
         self.max_length = max_length
         self.num_samples_per_step = num_samples_per_step
-        self.motif_pdb_paths = motif_pdb_paths or []
+        self.motif_scaffolding_files = motif_scaffolding_files or []
+        self._device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        self._device = torch.device(self._device_str)
         
         # Load pretrained model
-        print("Loading pretrained model...")
         self.model = self._load_pretrained_model(pretrained_model_path)
-        print("✓ Pretrained model loaded successfully")
         
         # Create frozen reference model (original weights)
-        print("Loading frozen reference model...")
         self.frozen_model = self._load_pretrained_model(pretrained_model_path)
         self.frozen_model.eval()
         for param in self.frozen_model.parameters():
             param.requires_grad = False
-        print("✓ Frozen reference model loaded and frozen successfully")
             
-        # Move models to device (will be done in setup_schedule)
         # Setup diffusion schedule
         self.setup_schedule()
         
@@ -111,20 +101,18 @@ class GenieFineTuner(LightningModule):
     def setup_schedule(self):
         """Set up variance schedule and precompute terms"""
         # Move models to device first
-        print(f"Moving models to device: {self.device}")
-        self.model = self.model.to(self.device)
-        self.frozen_model = self.frozen_model.to(self.device)
-        print("✓ Models moved to device successfully")
+        self.model = self.model.to(self._device)
+        self.frozen_model = self.frozen_model.to(self._device)
         
         self.betas = get_betas(
             self.config.diffusion['n_timestep'],
             self.config.diffusion['schedule']
-        ).to(self.device)
+        ).to(self._device)
 
         self.alphas = 1. - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, 0)
         self.alphas_cumprod_prev = torch.cat([
-            torch.Tensor([1.]).to(self.device),
+            torch.Tensor([1.]).to(self._device),
             self.alphas_cumprod[:-1]
         ])
         self.one_minus_alphas_cumprod = 1. - self.alphas_cumprod
@@ -137,223 +125,160 @@ class GenieFineTuner(LightningModule):
         self.sqrt_one_minus_alphas_cumprod_prev = torch.sqrt(1. - self.alphas_cumprod_prev)
         self.sqrt_recip_alphas_cumprod = 1. / self.sqrt_alphas_cumprod
         self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1. / self.alphas_cumprod - 1)
-        print("✓ Diffusion schedule setup completed")
 
-    def generate_conditioned_features(self, sequence_length):
+
+    def generate_conditioned_features(self, motif_pdb_path):
         """
-        Generate features for conditioned generation (with motif) using proper Genie 2 approach
-        
-        Args:
-            sequence_length: Total sequence length
-            
-        Returns:
-            features: Dictionary containing conditioned features
+        Generate features for conditioned generation (with motif)
         """
-        # Use real motif PDB if available, otherwise create synthetic motif
-        if self.motif_pdb_paths:
-            # Randomly select a motif PDB file
-            motif_pdb_path = np.random.choice(self.motif_pdb_paths)
-            print(f"        Using motif PDB: {motif_pdb_path}")
-            try:
-                # Create features from real motif PDB
-                motif_np_features = create_np_features_from_motif_pdb(motif_pdb_path)
-                print(f"        Motif PDB has {motif_np_features['num_residues']} residues")
-                
-                # Always create features with the exact requested sequence length
-                np_features = create_empty_np_features([sequence_length])
-                
-                # Copy motif information if it fits
-                motif_length = min(motif_np_features['num_residues'], sequence_length)
-                print(f"        Copying {motif_length} motif residues to sequence of length {sequence_length}")
-                if motif_length > 0:
-                    # Copy motif data to the beginning of the sequence
-                    np_features['aatype'][:motif_length] = motif_np_features['aatype'][:motif_length]
-                    np_features['atom_positions'][:motif_length] = motif_np_features['atom_positions'][:motif_length]
-                    np_features['fixed_sequence_mask'][:motif_length] = 1.0
-                    np_features['fixed_structure_mask'][:motif_length, :motif_length] = motif_np_features['fixed_structure_mask'][:motif_length, :motif_length]
-                    np_features['fixed_group'][:motif_length] = motif_np_features['fixed_group'][:motif_length]
-                
-                # Convert to tensor and batch
-                features = convert_np_features_to_tensor(
-                    batchify_np_features([np_features]), self.device
-                )
-                return features
-                
-            except Exception as e:
-                print(f"        Warning: Could not load motif PDB {motif_pdb_path}: {e}")
-                print("        Falling back to synthetic motif generation")
+        # Create conditioned features using Genie 2 utilities
+        np_features = create_np_features_from_motif_pdb_spec(motif_pdb_path)
         
-        # Fallback: Create synthetic motif features
-        print(f"        Creating synthetic conditioned features for length {sequence_length}")
-        return self._create_synthetic_conditioned_features(sequence_length)
-    
-    def _create_synthetic_conditioned_features(self, sequence_length):
-        """
-        Create synthetic conditioned features as fallback
-        """
-        # Create empty features first
-        np_features = create_empty_np_features([sequence_length])
+        self._last_generated_length = np_features['num_residues']
         
-        # Add synthetic motif (random positions)
-        motif_length = min(np.random.randint(5, 20), sequence_length)
-        motif_start = np.random.randint(0, sequence_length - motif_length + 1)
-        motif_end = motif_start + motif_length
-        
-        # Set motif sequence and structure
-        for i in range(motif_length):
-            pos = motif_start + i
-            aa_type = np.random.randint(0, 20)
-            np_features['aatype'][pos, aa_type] = 1.0
-            np_features['fixed_sequence_mask'][pos] = 1.0
-            np_features['atom_positions'][pos] = np.random.randn(3) * 5.0  # Random coordinates
-        
-        # Set pairwise structure mask for motif
-        motif_positions = np.arange(motif_start, motif_end)
-        for i in motif_positions:
-            for j in motif_positions:
-                np_features['fixed_structure_mask'][i, j] = 1.0
-        
-        # Convert to tensor and batch
+        # Convert to tensor and batch (same pattern as unconditioned)
         features = convert_np_features_to_tensor(
-            batchify_np_features([np_features]), self.device
+            batchify_np_features([np_features]), self._device
         )
         return features
 
     def generate_unconditioned_features(self, sequence_length):
         """
-        Generate features for unconditioned generation (no motif) using proper Genie 2 approach
-        
-        Args:
-            sequence_length: Total sequence length
-            
-        Returns:
-            features: Dictionary containing unconditioned features
+        Generate features for unconditioned generation (no motif)
         """
-        print(f"        Creating unconditioned features for length {sequence_length}")
         # Create empty features using Genie 2 utilities
         np_features = create_empty_np_features([sequence_length])
         
         # Convert to tensor and batch
         features = convert_np_features_to_tensor(
-            batchify_np_features([np_features]), self.device
+            batchify_np_features([np_features]), self._device
         )
         return features
 
     def add_noise(self, features, timesteps):
         """
-        Add noise to clean coordinates at given timesteps
-        
-        Args:
-            features: Feature dictionary
-            timesteps: [B] Timesteps for each sample
-            
-        Returns:
-            noisy_features: Features with noisy coordinates
-            noise: The actual noise that was added
+        Add noise to clean coordinates at given timesteps, respecting motif constraints
         """
         coords = features['atom_positions']
-        noise = torch.randn_like(coords) * features['residue_mask'].unsqueeze(-1)
+        batch_size = coords.shape[0]
         
-        # Apply noise
-        noisy_coords = self.sqrt_alphas_cumprod[timesteps].view(-1, 1, 1) * coords + \
-                      self.sqrt_one_minus_alphas_cumprod[timesteps].view(-1, 1, 1) * noise
+        # Generate noise
+        noise = torch.randn_like(coords)
         
-        # Create frames
+        # Create mask for positions that CAN be noised (scaffold only)
+        # valid positions AND not fixed (motifs)
+        noise_mask = features['residue_mask'].unsqueeze(-1).float() * \
+                    (~features['fixed_sequence_mask']).unsqueeze(-1).float()
+        
+        # Apply mask to noise - only noise scaffold positions
+        masked_noise = noise * noise_mask
+        
+        # Get noise schedule coefficients
+        timesteps = torch.clamp(timesteps, 0, len(self.sqrt_alphas_cumprod) - 1)
+        sqrt_alpha_cumprod = self.sqrt_alphas_cumprod[timesteps].view(batch_size, 1, 1)
+        sqrt_one_minus_alpha_cumprod = self.sqrt_one_minus_alphas_cumprod[timesteps].view(batch_size, 1, 1)
+        
+        # Add noise using reparameterization trick
+        noisy_coords = sqrt_alpha_cumprod * coords + sqrt_one_minus_alpha_cumprod * masked_noise
+        
+        # Preserve original motif coordinates by copying them back
+        motif_mask = features['fixed_sequence_mask'].unsqueeze(-1).float()
+        noisy_coords = noisy_coords * (1 - motif_mask) + coords * motif_mask
+        
+        # Apply overall residue mask
+        noisy_coords = noisy_coords * features['residue_mask'].unsqueeze(-1).float()
+        
+        # Compute frames from noisy coordinates
         rots = compute_frenet_frames(
             noisy_coords,
-            features['chain_index'],
+            features['chain_index'], 
             features['residue_mask']
         )
         ts = T(rots, noisy_coords)
         
-        # Update features
-        noisy_features = features.copy()
+        # Deep copy features
+        noisy_features = {}
+        for key, value in features.items():
+            if torch.is_tensor(value):
+                noisy_features[key] = value.clone()
+            else:
+                noisy_features[key] = value
+                
         noisy_features['atom_positions'] = noisy_coords
         
-        return noisy_features, ts, noise
+        return noisy_features, ts, masked_noise
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self):
         """
-        Single fine-tuning step following the concept erasure approach
-        
-        Args:
-            batch: Batch of training data (motif information)
-            batch_idx: Batch index
-            
-        Returns:
-            loss: L2 loss between fine-tuned model and target
+        Single fine-tuning step with shared x_t for cond/uncond
+        and scaffold-only masked loss.
         """
-        # Generate random sequence length
-        sequence_length = torch.randint(50, self.max_length + 1, (1,)).item()
-        print(f"  Step {batch_idx}: Generated sequence length = {sequence_length}")
-        
-        # Sample timesteps
-        timesteps = torch.randint(
-            1, self.config.diffusion['n_timestep'] + 1,
-            size=(self.num_samples_per_step,)
-        ).to(self.device)
-        print(f"  Step {batch_idx}: Sampled timesteps = {timesteps.cpu().numpy()}")
-        
+        # 1) Build ONE conditioned clean sample
+        cond_clean = self.generate_conditioned_features(
+            np.random.choice(self.motif_scaffolding_files)
+        )
+
+        def clone_with_coords(feat, coords):
+            out = {}
+            for k, v in feat.items():
+                if torch.is_tensor(v):
+                    out[k] = v.clone()
+                else:
+                    out[k] = v
+            out['atom_positions'] = coords.clone()
+            return out
+
         total_loss = 0.0
-        
-        for i in range(self.num_samples_per_step):
-            print(f"    Sample {i+1}/{self.num_samples_per_step}:")
-            
-            # Generate conditioned features (with motif) using proper Genie 2 approach
-            print(f"      Generating conditioned features...")
-            conditioned_features = self.generate_conditioned_features(sequence_length)
-            print(f"      Conditioned features shape: {conditioned_features['atom_positions'].shape}")
-            
-            # Generate unconditioned features (no motif) using proper Genie 2 approach
-            print(f"      Generating unconditioned features...")
-            unconditioned_features = self.generate_unconditioned_features(sequence_length)
-            print(f"      Unconditioned features shape: {unconditioned_features['atom_positions'].shape}")
-            
-            # Add noise
-            print(f"      Adding noise at timestep {timesteps[i].item()}...")
-            conditioned_features_noisy, ts_cond, noise_cond = self.add_noise(
-                conditioned_features, timesteps[i:i+1]
+
+        for _ in range(self.num_samples_per_step):
+            # 2) Sample ONE timestep and ONE noise; create ONE shared x_t
+            t = torch.randint(0, self.config.diffusion['n_timestep'], (1,),
+                            device=self._device)
+            coords = cond_clean['atom_positions']  # clean coords
+            eps = torch.randn_like(coords)
+
+            sqrt_ac = self.sqrt_alphas_cumprod[t].view(1, 1, 1)
+            sqrt_om = self.sqrt_one_minus_alphas_cumprod[t].view(1, 1, 1)
+            x_t = sqrt_ac * coords + sqrt_om * eps  # shared noisy sample
+
+            # 3) Create BOTH feature views that reference the SAME x_t
+            cond_noisy = clone_with_coords(cond_clean, x_t)
+            uncond_noisy = clone_with_coords(cond_clean, x_t)
+            # "Unconditioned" = zero out motif mask
+            uncond_noisy['fixed_sequence_mask'] = torch.zeros_like(
+                uncond_noisy['fixed_sequence_mask']
             )
-            unconditioned_features_noisy, ts_uncond, noise_uncond = self.add_noise(
-                unconditioned_features, timesteps[i:i+1]
+
+            # 4) Build frames once from x_t and reuse
+            rots = compute_frenet_frames(
+                x_t, cond_noisy['chain_index'], cond_noisy['residue_mask']
             )
-            print(f"      Noisy features shapes - cond: {conditioned_features_noisy['atom_positions'].shape}, uncond: {unconditioned_features_noisy['atom_positions'].shape}")
-            
-            # Sample frozen model twice (conditioned and unconditioned)
-            print(f"      Running frozen model predictions...")
+            ts = T(rots, x_t)
+
+            # 5) Teacher predictions on SAME x_t (cond vs uncond)
             with torch.no_grad():
-                # Conditioned prediction from frozen model
-                frozen_cond_noise = self.frozen_model.model(ts_cond, timesteps[i:i+1], conditioned_features_noisy)['z']
-                print(f"      Frozen conditioned noise shape: {frozen_cond_noise.shape}")
-                
-                # Unconditioned prediction from frozen model
-                frozen_uncond_noise = self.frozen_model.model(ts_uncond, timesteps[i:i+1], unconditioned_features_noisy)['z']
-                print(f"      Frozen unconditioned noise shape: {frozen_uncond_noise.shape}")
-            
-            # Compute target using the concept erasure formula
-            # Target = ε_θ*(x_t, t) - η[ε_θ*(x_t, c, t) - ε_θ*(x_t, t)]
-            print(f"      Computing guidance vector and target...")
-            guidance_vector = frozen_cond_noise - frozen_uncond_noise
-            target_noise = frozen_uncond_noise - self.eta * guidance_vector
-            print(f"      Guidance vector shape: {guidance_vector.shape}, Target noise shape: {target_noise.shape}")
-            
-            # Sample fine-tuned model (conditioned)
-            print(f"      Running fine-tuned model prediction...")
-            fine_tuned_noise = self.model.model(ts_cond, timesteps[i:i+1], conditioned_features_noisy)['z']
-            print(f"      Fine-tuned noise shape: {fine_tuned_noise.shape}")
-            
-            # Compute L2 loss
-            loss = self.loss_fn(fine_tuned_noise, target_noise)
-            print(f"      Loss for sample {i+1}: {loss.item():.6f}")
+                frozen_cond_out = self.frozen_model.model(ts, t, cond_noisy)
+                frozen_uncond_out = self.frozen_model.model(ts, t, uncond_noisy)
+                frozen_cond_noise = frozen_cond_out['z']
+                frozen_uncond_noise = frozen_uncond_out['z']
+
+            # Target = ε_u − η (ε_c − ε_u)  = (1+η) ε_u − η ε_c
+            target_noise = frozen_uncond_noise - self.eta * (
+                frozen_cond_noise - frozen_uncond_noise
+            )
+
+            scale = frozen_uncond_noise.norm(dim=-1, keepdim=True) / (target_noise.norm(dim=-1, keepdim=True) + 1e-8)
+            target_noise = target_noise * scale
+
+            # 6) Student prediction (conditioned view)
+            pred = self.model.model(ts, t, cond_noisy)['z']
+
+            # 7) Scaffold-only masked L2 loss (ignore fixed motifs)
+            loss = self.loss_fn(pred, target_noise)
+
             total_loss += loss
-        
+
         avg_loss = total_loss / self.num_samples_per_step
-        print(f"  Step {batch_idx}: Average loss = {avg_loss.item():.6f}")
-        
-        # Logging
-        self.log('fine_tune_loss', avg_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log('eta', self.eta, on_step=True, on_epoch=True)
-        
         return avg_loss
 
     def configure_optimizers(self):
@@ -364,63 +289,53 @@ class GenieFineTuner(LightningModule):
             weight_decay=1e-4
         )
 
-    def fine_tune(self, num_epochs=100, save_path=None):
+    def fine_tune(self, num_steps=1000, accum_steps=4, save_path=None):
         """
-        Run fine-tuning process
-        
+        Run fine-tuning with gradient accumulation and random scaffold batching.
+
         Args:
-            num_epochs: Number of epochs to fine-tune
-            save_path: Path to save fine-tuned model
+            num_steps: total number of optimizer updates
+            accum_steps: number of scaffolds to accumulate before each update
         """
-        print(f"\n🚀 Starting fine-tuning for {num_epochs} epochs...")
-        print(f"   - Learning rate: {self.learning_rate}")
-        print(f"   - Eta (concept adjustment strength): {self.eta}")
-        print(f"   - Max sequence length: {self.max_length}")
-        print(f"   - Samples per step: {self.num_samples_per_step}")
-        print(f"   - Device: {self.device}")
+        print(f"Starting fine-tuning for {num_steps} steps...")
+        print(f"Learning rate: {self.learning_rate}, Eta: {self.eta}")
+        print(f"Length range: {self.min_length}–{self.max_length}")
         
         self.train()
-        
         optimizer = self.configure_optimizers()
-        print(f"✓ Optimizer configured: {type(optimizer).__name__}")
-        
-        # Create dummy dataset for training loop
-        dummy_batch = [None] * 1000  # Dummy batches
-        print(f"✓ Created {len(dummy_batch)} dummy batches for training")
-        
-        for epoch in range(num_epochs):
-            print(f"\n📚 Epoch {epoch+1}/{num_epochs}")
-            epoch_loss = 0.0
-            
-            for batch_idx, _ in enumerate(tqdm(dummy_batch, desc=f"Epoch {epoch+1}/{num_epochs}")):
-                optimizer.zero_grad()
-                
-                loss = self.training_step(None, batch_idx)
-                
+        self.losses = []
+
+        step = 0
+        while step < num_steps:
+            optimizer.zero_grad()
+            batch_loss = 0.0
+
+            for i in range(accum_steps):
+                # === Sample a random scaffold length ===
+                seq_len = np.random.randint(self.min_length, self.max_length + 1)
+
+                # === Generate conditioned features from a random motif ===
+                motif_file = np.random.choice(self.motif_scaffolding_files)
+                cond_clean = self.generate_conditioned_features(motif_file)
+
+                # (Optionally adjust cond_clean to seq_len here if you want exact length match)
+                # For now, just proceed with cond_clean's length
+
+                # === Training step (loss for one scaffold) ===
+                loss = self.training_step()
+                loss = loss / accum_steps   # normalize
                 loss.backward()
-                
-                # Gradient clipping
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                
-                optimizer.step()
-                
-                epoch_loss += loss.item()
-            
-            avg_epoch_loss = epoch_loss / len(dummy_batch)
-            print(f"\n📊 Epoch {epoch+1}/{num_epochs} completed!")
-            print(f"   Average Loss: {avg_epoch_loss:.6f}")
-            
-            # Save checkpoint
-            if save_path and (epoch + 1) % 10 == 0:
-                checkpoint_path = os.path.join(save_path, f"fine_tuned_epoch_{epoch+1}.pt")
-                torch.save({
-                    'model_state_dict': self.model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'epoch': epoch + 1,
-                    'loss': avg_epoch_loss,
-                    'eta': self.eta
-                }, checkpoint_path)
-                print(f"💾 Saved checkpoint: {checkpoint_path}")
+                batch_loss += loss.item()
+
+            # === Optimizer update ===
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+
+            step += 1
+            avg_loss = batch_loss / accum_steps
+            self.losses.append(avg_loss)
+            print(f"Step {step}/{num_steps} - Average Loss: {avg_loss:.6f}")
 
     def save_model(self, save_path):
         """Save the fine-tuned model"""
@@ -429,45 +344,51 @@ class GenieFineTuner(LightningModule):
             'config': self.config,
             'eta': self.eta
         }, save_path)
-        print(f"Fine-tuned model saved to: {save_path}")
+        print(f"Model saved to: {save_path}")
 
 
 def main():
     """Example usage of the fine-tuner"""
     from genie.config import Config
     
-    print("🔧 Initializing Genie Fine-Tuner...")
-    
     # Load configuration
     config = Config()
-    print("✓ Configuration loaded")
     
-    # Define motif PDB paths for conditioning (optional)
-    motif_pdb_paths = [
-        "../data/design25/1prw.pdb",
+    # Define motif scaffolding problem files
+    motif_scaffolding_files = [
+        "../data/design25/1bcf.pdb",
+        # Add more scaffolding problem files here
     ]
     
     # Initialize fine-tuner
-    print("🚀 Initializing fine-tuner...")
     fine_tuner = GenieFineTuner(
         pretrained_model_path="../results/base/checkpoints/epoch=40.ckpt",
         config=config,
-        eta=1.0,  # Adjust this to control concept adjustment strength
+        eta=0.9,  # Adjust this to control concept adjustment strength
         learning_rate=1e-5,
-        max_length=256,
-        num_samples_per_step=4,
-        motif_pdb_paths=motif_pdb_paths  # Use real motif PDBs for conditioning
+        min_length=3,
+        max_length=5,
+        num_samples_per_step=6,
+        motif_scaffolding_files=motif_scaffolding_files
     )
-    print("✓ Fine-tuner initialized successfully!")
     
+    n_s = 30
     # Run fine-tuning
     fine_tuner.fine_tune(
-        num_epochs=1,
+        num_steps = n_s,
         save_path="fine_tuned_models"
     )
     
     # Save final model
-    fine_tuner.save_model("fine_tuned_genie2.pt")
+    plt.figure(figsize=(8,5))
+    plt.scatter(range(1, n_s+1), fine_tuner.losses, label="Training Loss", color="blue")
+    plt.xlabel("Step")
+    plt.ylabel("Loss")
+    plt.title("Fine-tuning Loss Curve")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig("loss_curve.png")   # save as file
 
 
 if __name__ == "__main__":

@@ -374,6 +374,104 @@ def summarize_pdb(filepath):
 		'num_chains': num_chains
 	}
 
+
+def create_np_features_from_motif_pdb_spec(filepath):
+    """
+    Create a feature dictionary from a motif specification file.
+    """
+    
+    # Parse motif specification first
+    spec = load_motif_spec(filepath)
+    
+    # Parse PDB with residue numbers
+    motif_seqs, motif_coords = parse_pdb_with_spec(filepath, spec)
+    motif_aatype = np.concatenate(motif_seqs)
+    motif_aatype = np.eye(len(RESTYPES))[motif_aatype]  # one-hot encoding
+    motif_atom_positions = np.concatenate(motif_coords)
+
+    # Generate motif mask
+    motif_mask = sample_motif_mask(spec)
+    fixed_sequence_mask = motif_mask['sequence']
+    fixed_structure_mask = motif_mask['structure']
+    fixed_group = motif_mask['group']
+
+    # Initialize features
+    num_residues = len(fixed_sequence_mask)
+    features = create_empty_np_features([num_residues])
+
+    # Update features
+    features['aatype'][fixed_sequence_mask] = motif_aatype
+    features['atom_positions'][fixed_sequence_mask] = motif_atom_positions
+    features['fixed_sequence_mask'] = fixed_sequence_mask
+    features['fixed_structure_mask'] = fixed_structure_mask
+    features['fixed_group'] = fixed_group
+
+    return features
+
+
+def parse_pdb_with_spec(filepath, spec):
+    """
+    Parse a PDB file and extract only the residues specified in the motif specification.
+    """
+    def _handle(file):
+        seqs, coords = [], []
+        current_chain = None
+        
+        # Extract motif ranges from spec
+        motif_ranges = {}
+        for structure in spec['structures']:
+            if structure['type'] == 'motif':
+                chain = structure['chain']
+                start = structure['start_index']
+                end = structure['end_index']
+                if chain not in motif_ranges:
+                    motif_ranges[chain] = []
+                motif_ranges[chain].append((start, end))
+        
+        for line in file:
+            if line.startswith('ATOM') and line[13:15].strip() == 'CA':
+                
+                # Parse residue information including residue number
+                restype_3 = line[17:20]
+                restype_1 = RESTYPE_3_TO_1[restype_3]
+                restype_order = RESTYPE_ORDER[restype_1]
+                chain = line[21]
+                resnum = int(line[22:26].strip())  # residue number
+                x = float(line[30:38])
+                y = float(line[38:46])
+                z = float(line[46:54])
+
+                # Check if this residue is in any motif range
+                include_residue = False
+                if chain in motif_ranges:
+                    for start, end in motif_ranges[chain]:
+                        if start <= resnum <= end:
+                            include_residue = True
+                            break
+                
+                if not include_residue:
+                    continue
+
+                # Create data structure
+                if current_chain is None or chain != current_chain:
+                    seqs.append([])
+                    coords.append([])
+                    current_chain = chain
+
+                # Update
+                seqs[-1].append(restype_order)
+                coords[-1].append([x, y, z])
+
+        return seqs, coords
+
+    if filepath.endswith('.gz'):
+        with gzip.open(filepath, 'rt') as file:
+            return _handle(file)
+    else:
+        with open(filepath, 'r') as file:
+            return _handle(file)
+
+
 def parse_pdb(filepath):
 	"""
 	Parse a PDB file to extract sequences and Ca coordinates.
