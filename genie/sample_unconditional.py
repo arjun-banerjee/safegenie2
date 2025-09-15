@@ -1,9 +1,11 @@
 import argparse
 from tqdm import tqdm
+import torch
 
 from genie.sampler.unconditional import UnconditionalSampler
 from genie.utils.multiprocessor import MultiProcessor
-from genie.utils.model_io import load_pretrained_model
+from genie.utils.model_io import load_pretrained_model, load_config
+from genie.diffusion.genie import Genie
 
 
 class UnconditionalRunner(MultiProcessor):
@@ -59,7 +61,7 @@ class UnconditionalRunner(MultiProcessor):
 		# Define
 		names = [
 			'rootdir', 'name', 'epoch',
-			'scale', 'outdir', 'num_samples', 'batch_size'
+			'scale', 'outdir', 'num_samples', 'batch_size', 'edited_model_checkpoint_dir'
 		]
 
 		# Create constants
@@ -87,6 +89,12 @@ class UnconditionalRunner(MultiProcessor):
 			constants['name'],
 			constants['epoch']
 		).eval().to(device)
+  
+		if constants['edited_model_checkpoint_dir'] is not None:
+			print("Loading edited model checkpoint from:", constants['edited_model_checkpoint_dir'])
+			state_dict = torch.load(constants['edited_model_checkpoint_dir'], weights_only=False)['model_state_dict']
+			print("state_dict", state_dict)
+			model.load_state_dict(state_dict)
 
 		# Load sampler
 		sampler = UnconditionalSampler(model)
@@ -147,6 +155,9 @@ if __name__ == '__main__':
 	parser.add_argument('--min_length', type=int, help='Minimum sequence length', default=50)
 	parser.add_argument('--max_length', type=int, help='Maximum sequence length', default=256)
 	parser.add_argument('--length_step', type=int, help='Length step size', default=1)
+ 
+ 	# Adding our own checkpoints!
+	parser.add_argument('--edited_model_checkpoint_dir', type=str, help='Edited model checkpoint', default=None)
 	
 	# Define environment arguments
 	parser.add_argument('--num_devices', type=int, help='Number of GPU devices', default=1)

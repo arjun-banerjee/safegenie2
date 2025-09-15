@@ -146,10 +146,15 @@ class BaseSampler(ABC):
 					-	offset: offset for distinguishing between batches
 					-	user-defined parameters (by calling add_required_parameter).
 		"""
+		print("start!")
 		self.validate_parameters(params)
+		print("validated!")
 		self.on_sample_start(params)
+		print("on_sample_start done!")
 		list_np_features = self._sample(params)
+		print("list_np_features done!")
 		self.on_sample_end(params, list_np_features)
+		print("on_sample_end done!")
 
 	def _sample(self, params):
 		"""
@@ -198,7 +203,9 @@ class BaseSampler(ABC):
 					-	interface_mask:
 							[N] deprecated and set to all zeros.
 		"""
-
+		print("creating features")
+		print("num_samples", params['num_samples'])
+		print("self.device", self.device)
 		# Create features
 		features = convert_np_features_to_tensor(
 			batchify_np_features([
@@ -207,6 +214,20 @@ class BaseSampler(ABC):
 			]),
 			self.device
 		)
+		# print("creating features_sub")
+		# features_sub = []
+		# for i in range(params['num_samples']):
+		# 	print("creating feature for sample", i)
+		# 	features_sub.append(self.create_np_features(params))
+		# print("features_sub created")
+
+		# print("batchifying features")
+		# batched = batchify_np_features(features)
+		# print("features batchified")
+  
+		# print("converting features to tensor")
+		# features = convert_np_features_to_tensor(batched, self.device)
+		# print("features created")
 
 		# Create frames
 		trans = torch.randn_like(features['atom_positions'])
@@ -225,11 +246,13 @@ class BaseSampler(ABC):
 
 			# Define current diffusion timestep
 			timesteps = torch.Tensor([step] * params['num_samples']).int().to(self.device)
-
+			print("computing step:", step)
 			# Compute noise
 			with torch.no_grad():
 				z_pred = self.model.model(ts, timesteps, features)['z']
+			print("z_pred computed")
 
+			
 			# Compute posterior
 			w_z = (1. - self.model.alphas[timesteps]) / self.model.sqrt_one_minus_alphas_cumprod[timesteps]
 			trans_mean = (1. / self.model.sqrt_alphas[timesteps]).view(-1, 1, 1) * (ts.trans - w_z.view(-1, 1, 1) * z_pred)

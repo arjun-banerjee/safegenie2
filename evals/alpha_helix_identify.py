@@ -33,12 +33,13 @@ def has_alpha_helix(pdb_file):
     for residue in dssp:
         secondary_structure = residue[2]  # secondary structure is at index 2
         if secondary_structure == 'H':  # alpha helix
+            print("residue that is in the alpha helix:", residue)
             return True
     
     return False
 
 # change pdb_file name:
-pdb_file = "5tpn_altered.pdb"
+pdb_file = "/home/ubuntu/safegenie2/results/base/outputs/reproduce_2/pdbs/114_3_relaxed_patched.pdb"
 if has_alpha_helix(pdb_file):
     print("Alpha helix found!")
 else:

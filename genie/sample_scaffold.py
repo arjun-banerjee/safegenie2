@@ -2,6 +2,7 @@ import os
 import glob
 import argparse
 from tqdm import tqdm
+import torch
 
 from genie.sampler.scaffold import ScaffoldSampler
 from genie.utils.multiprocessor import MultiProcessor
@@ -64,7 +65,7 @@ class ScaffoldRunner(MultiProcessor):
 		# Define
 		names = [
 			'rootdir', 'name', 'epoch', 'scale', 'strength',
-			'outdir', 'num_samples', 'batch_size', 'datadir'
+			'outdir', 'num_samples', 'batch_size', 'datadir', 'edited_model_checkpoint_dir'
 		]
 
 		# Create constants
@@ -85,19 +86,25 @@ class ScaffoldRunner(MultiProcessor):
 			device:
 				Name of device to execute on.
 		"""
-
-		# Load model
+  		# Load model
 		model = load_pretrained_model(
 			constants['rootdir'],
 			constants['name'],
 			constants['epoch']
 		).eval().to(device)
+  
+		if constants['edited_model_checkpoint_dir'] is not None:
+			print("Loading edited model checkpoint from:", constants['edited_model_checkpoint_dir'])
+			state_dict = torch.load(constants['edited_model_checkpoint_dir'], weights_only=False)['model_state_dict']
+			# print("state_dict", state_dict)
+			model.load_state_dict(state_dict)
 
 		# Load sampler
 		sampler = ScaffoldSampler(model)
 
 		# Iterate through all tasks
 		for task in tqdm(tasks, desc=device):
+			print("task:", task)
 
 			# Define output directory
 			outdir = os.path.join(
@@ -130,7 +137,9 @@ class ScaffoldRunner(MultiProcessor):
 				}
 
 				# Sample
+				print("sampling...")
 				sampler.sample(params)
+				print("done sampling")
 
 				# Update
 				num_samples -= batch_size
@@ -163,6 +172,9 @@ if __name__ == '__main__':
 	parser.add_argument('--batch_size', type=int, help='Batch size', default=4)
 	parser.add_argument('--motif_name', type=str, help='Motif name', default=None)
 	parser.add_argument('--datadir', type=str, help='Data directory', default='data/design25')
+	
+	# Adding our own checkpoints!
+	parser.add_argument('--edited_model_checkpoint_dir', type=str, help='Edited model checkpoint', default=None)
 	
 	# Define environment arguments
 	parser.add_argument('--num_devices', type=int, help='Number of GPU devices', default=1)

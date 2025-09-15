@@ -105,7 +105,10 @@ def create_np_features_from_motif_pdb(filepath):
 
 	# Parse
 	spec = load_motif_spec(filepath)
+	#print(spec)
 	motif_seqs, motif_coords = parse_pdb(filepath)
+	#print("motif_seqs", motif_seqs)
+	#print("motif_coords", motif_coords)
 	motif_aatype = np.concatenate(motif_seqs)
 	motif_aatype = np.eye(len(RESTYPES))[motif_aatype] # one-hot encoding
 	motif_atom_positions = np.concatenate(motif_coords)
@@ -239,6 +242,7 @@ def batchify_np_features(list_np_features):
 			A list of feature dictionary, where values in each 
 			dictionary are numpy arrays.
 	"""
+	#print("batchifying features")
 
 	# Define
 	keys = list(list_np_features[0].keys())
@@ -264,6 +268,7 @@ def batchify_np_features(list_np_features):
 			np.expand_dims(np_features_padded[key], axis=0)
 			for np_features_padded in list_np_features_padded
 		])
+	#print("batchified features")
 
 	return np_features
 
@@ -305,6 +310,7 @@ def convert_np_features_to_tensor(features, device):
 	"""
 	Convert values in a (batched) feature dictionary to tensors.
 	"""
+	#print("converting features to tensor")
 	return {
 		'num_chains': torch.Tensor(features['num_chains']).int().to(device),
 		'num_residues': torch.Tensor(features['num_residues']).int().to(device),
@@ -379,6 +385,7 @@ def create_np_features_from_motif_pdb_spec(filepath):
     """
     Create a feature dictionary from a motif specification file.
     """
+    #print("create_np_features_from_motif_pdb_spec called with filepath:", filepath)
     
     # Parse motif specification first
     spec = load_motif_spec(filepath)
@@ -394,6 +401,8 @@ def create_np_features_from_motif_pdb_spec(filepath):
     fixed_sequence_mask = motif_mask['sequence']
     fixed_structure_mask = motif_mask['structure']
     fixed_group = motif_mask['group']
+    
+    #print("initializing features")
 
     # Initialize features
     num_residues = len(fixed_sequence_mask)

@@ -59,6 +59,7 @@ def load_config(rootdir, name):
 	Returns:
 		An instance of Config (defined in config.py).
 	"""
+	print("path config: ", os.path.join(rootdir, name, 'configuration'))
 	return Config(os.path.join(rootdir, name, 'configuration'))
 
 def load_default_model(rootdir, name):
@@ -151,9 +152,12 @@ def load_pretrained_model(rootdir, name, epoch):
 	Returns:
 		An instance of Genie (defined in diffusion/genie.py).
 	"""
+	print("rootdir", rootdir)
+	print("name", name)
 
 	# load configuration
 	config = load_config(rootdir, name)
+	print("config", config)
 
 	# define checkpoint
 	ckpt_filepath = os.path.join(
@@ -171,3 +175,4 @@ def load_pretrained_model(rootdir, name, epoch):
 	# load model
 	print('Loading checkpoint: {}'.format(ckpt_filepath))
 	return Genie.load_from_checkpoint(ckpt_filepath, config=config)
+

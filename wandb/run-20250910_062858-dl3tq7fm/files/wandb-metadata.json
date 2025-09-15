@@ -1,0 +1,48 @@
+{
+  "os": "Linux-6.8.0-60-generic-x86_64-with-glibc2.35",
+  "python": "CPython 3.10.12",
+  "startedAt": "2025-09-10T06:28:58.081433Z",
+  "args": [
+    "--devices",
+    "1",
+    "--num_nodes",
+    "1",
+    "--config",
+    "runs/example/configuration"
+  ],
+  "program": "/home/ubuntu/safegenie2/genie/train.py",
+  "codePath": "genie/train.py",
+  "codePathLocal": "genie/train.py",
+  "git": {
+    "remote": "git@github.com:arjun-banerjee/safegenie2.git",
+    "commit": "76f2b83676629a0fe85844a785fca2d81a07491a"
+  },
+  "email": "martinezdavid@berkeley.edu",
+  "root": ".",
+  "host": "104-171-202-223",
+  "executable": "/usr/bin/python",
+  "cpu_count": 14,
+  "cpu_count_logical": 14,
+  "gpu": "Quadro RTX 6000",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "532608356352",
+      "used": "52536119296"
+    }
+  },
+  "memory": {
+    "total": "48400412672"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "Quadro RTX 6000",
+      "memoryTotal": "25769803776",
+      "cudaCores": 4608,
+      "architecture": "Turing",
+      "uuid": "GPU-26801a94-1d74-c065-e309-45021f6aa404"
+    }
+  ],
+  "cudaVersion": "12.8",
+  "writerId": "hlunok367ir1ahltqo35kyzekkqqvye9"
+}

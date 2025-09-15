@@ -4,7 +4,7 @@ import torch
 
 from genie.sampler.base import BaseSampler
 from genie.utils.feat_utils import (
-	create_np_features_from_motif_pdb,
+	create_np_features_from_motif_pdb_spec,
 	save_np_features_to_pdb
 )
 from genie.utils.motif_utils import save_motif_pdb
@@ -97,7 +97,7 @@ class ScaffoldSampler(BaseSampler):
 				-	interface_mask:
 						[N] deprecated and set to all zeros.
 		"""
-		return create_np_features_from_motif_pdb(params['filepath'])
+		return create_np_features_from_motif_pdb_spec(params['filepath'])
 
 	def on_sample_end(self, params, list_np_features):
 		"""
@@ -157,13 +157,13 @@ class ScaffoldSampler(BaseSampler):
 			)
 			save_np_features_to_pdb(np_features, output_pdb_filepath)
 
-			# Save motif pdb
-			output_motif_pdb_filepath = os.path.join(
-				params['outdir'], 'motif_pdbs',
-				'{}.pdb'.format(name)
-			)
-			save_motif_pdb(
-				params['filepath'],
-				np_features['fixed_sequence_mask'],
-				output_motif_pdb_filepath
-			)
+			# # Save motif pdb
+			# output_motif_pdb_filepath = os.path.join(
+			# 	params['outdir'], 'motif_pdbs',
+			# 	'{}.pdb'.format(name)
+			# )
+			# save_motif_pdb(
+			# 	params['filepath'],
+			# 	np_features['fixed_sequence_mask'],
+			# 	output_motif_pdb_filepath
+			# )

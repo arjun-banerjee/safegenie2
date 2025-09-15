@@ -1,0 +1,77 @@
+_wandb:
+    value:
+        cli_version: 0.21.3
+        e:
+            hlunok367ir1ahltqo35kyzekkqqvye9:
+                args:
+                    - --devices
+                    - "1"
+                    - --num_nodes
+                    - "1"
+                    - --config
+                    - runs/example/configuration
+                codePath: genie/train.py
+                codePathLocal: genie/train.py
+                cpu_count: 14
+                cpu_count_logical: 14
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "532608356352"
+                        used: "52536119296"
+                email: martinezdavid@berkeley.edu
+                executable: /usr/bin/python
+                git:
+                    commit: 76f2b83676629a0fe85844a785fca2d81a07491a
+                    remote: git@github.com:arjun-banerjee/safegenie2.git
+                gpu: Quadro RTX 6000
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Turing
+                      cudaCores: 4608
+                      memoryTotal: "25769803776"
+                      name: Quadro RTX 6000
+                      uuid: GPU-26801a94-1d74-c065-e309-45021f6aa404
+                host: 104-171-202-223
+                memory:
+                    total: "48400412672"
+                os: Linux-6.8.0-60-generic-x86_64-with-glibc2.35
+                program: /home/ubuntu/safegenie2/genie/train.py
+                python: CPython 3.10.12
+                root: .
+                startedAt: "2025-09-10T06:28:58.081433Z"
+                writerId: hlunok367ir1ahltqo35kyzekkqqvye9
+        m:
+            - "1": trainer/global_step
+              "6":
+                - 3
+              "7": []
+            - "2": '*'
+              "5": 1
+              "6":
+                - 1
+              "7": []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 9
+                - 41
+                - 103
+            "2":
+                - 1
+                - 2
+                - 3
+                - 5
+                - 9
+                - 12
+                - 41
+                - 53
+                - 103
+            "3":
+                - 7
+                - 66
+            "4": 3.10.12
+            "5": 0.21.3
+            "12": 0.21.3
+            "13": linux-x86_64
