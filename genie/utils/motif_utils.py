@@ -56,77 +56,83 @@ def load_motif_spec(filepath):
 		'max_total_length': max_total_length
 	}
 
+
 def sample_motif_mask(spec):
-	"""
-	Sample a motif configuration from a dictionary of specifications.
+    """
+    Sample a motif configuration from a dictionary of specifications.
 
-	Args:
-		spec:
-			A dictionary of motif specifications containing
-				-	name:
-					Name of the motif scaffolding problem
-				-	structures:
-					A list of dictionaries, each of which defines either 
-						-	a motif segment, containing information on the chain and 
-							residue index range that the motif structure is coming 
-							from, as well as the motif group that this segment belongs
-						-	a scaffold segment, containing information on the maximum 
-							and minimum number of residues for the segment
-				-	min_total_length:
-					Minimum number of residues for the generated structure
-				-	max_total_length:
-					Maximum number of residues for the generated structure.
+    Args:
+        spec:
+            A dictionary of motif specifications containing
+                - name: Name of the motif scaffolding problem
+                - structures: List of motif or scaffold segments
+                - min_total_length: Minimum residues for the structure
+                - max_total_length: Maximum residues for the structure
 
-	Returns:
-		A dictionary of masks including
-			-	sequence:
-				A residue-level mask to indicate which residue contains conditional 
-				sequence information
-			-	structure: 
-				A pair residue-residue mask to indicate which pair of residues contains
-				conditional structural information
-			-	group:
-				Residue-level group indices to indicate which group each residue belongs to 
-				(0 indicates scaffold and each positive integer indicates a motif group).
-	"""
-	success = False
-	while not success:
+    Returns:
+        dict with:
+            - sequence: residue-level mask for conditional sequence info
+            - structure: pairwise mask for conditional structural info
+            - group: residue-level group indices (0=scaffold, >0 motif groups)
+    """
+    success = False
+    max_tries = 1000
+    tries = 0
 
-		# Define
-		total_length = 0
-		motif_sequence_mask = []
-		motif_groups = []
+    while not success and tries < max_tries:
+        tries += 1
 
-		# Generate
-		for structure in spec['structures']:
-			if structure['type'] == 'scaffold':
-				scaffold_length = np.random.randint(structure['min_length'], structure['max_length'] + 1)
-				motif_sequence_mask.extend([0] * scaffold_length)
-				motif_groups.extend([0] * scaffold_length)
-				total_length += scaffold_length
-			else:
-				motif_length = structure['end_index'] - structure['start_index'] + 1
-				motif_sequence_mask.extend([1] * motif_length)
-				motif_groups.extend([ord(structure['group']) - ord('A') + 1] * motif_length)
-				total_length += motif_length
+        total_length = 0
+        motif_sequence_mask = []
+        motif_groups = []
 
-		# Validate
-		if total_length >= spec['min_total_length'] and \
-			total_length <= spec['max_total_length']:
-			success = True
+        # Generate sequence/group masks
+        for structure in spec["structures"]:
+            if structure["type"] == "scaffold":
+                # Deterministic if min=max
+                if structure["min_length"] == structure["max_length"]:
+                    scaffold_length = structure["min_length"]
+                else:
+                    scaffold_length = np.random.randint(
+                        structure["min_length"], structure["max_length"] + 1
+                    )
+                motif_sequence_mask.extend([0] * scaffold_length)
+                motif_groups.extend([0] * scaffold_length)
+                total_length += scaffold_length
 
-	# Create motif structure mask
-	motif_structure_mask = np.zeros((total_length, total_length))
-	num_groups = np.max(motif_groups)
-	for i in range(1, 1 + num_groups):
-		motif_group_sequence_mask = np.equal(motif_groups, i)
-		motif_structure_mask += motif_group_sequence_mask[:, np.newaxis] * motif_group_sequence_mask[np.newaxis, :]
+            elif structure["type"] == "motif":
+                motif_length = structure["end_index"] - structure["start_index"] + 1
+                motif_sequence_mask.extend([1] * motif_length)
+                motif_groups.extend(
+                    [ord(structure["group"]) - ord("A") + 1] * motif_length
+                )
+                total_length += motif_length
 
-	return {
-		'sequence': np.array(motif_sequence_mask).astype(bool),
-		'structure': np.array(motif_structure_mask).astype(bool),
-		'group': np.array(motif_groups).astype(int)
-	}
+        # Validate
+        if spec["min_total_length"] <= total_length <= spec["max_total_length"]:
+            success = True
+
+    if not success:
+        raise ValueError(
+            f"Could not satisfy motif spec after {max_tries} tries: {spec['name']}"
+        )
+
+    # Create motif structure mask
+    motif_structure_mask = np.zeros((total_length, total_length), dtype=bool)
+    num_groups = np.max(motif_groups)
+    for i in range(1, 1 + num_groups):
+        motif_group_sequence_mask = np.equal(motif_groups, i)
+        motif_structure_mask |= (
+            motif_group_sequence_mask[:, np.newaxis]
+            & motif_group_sequence_mask[np.newaxis, :]
+        )
+
+    return {
+        "sequence": np.array(motif_sequence_mask, dtype=bool),
+        "structure": motif_structure_mask,
+        "group": np.array(motif_groups, dtype=int),
+    }
+
 
 def save_motif_pdb(spec_filepath, mask, pdb_filepath):
 	"""

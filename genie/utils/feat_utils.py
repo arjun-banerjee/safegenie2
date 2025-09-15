@@ -387,8 +387,8 @@ def create_np_features_from_motif_pdb_spec(filepath):
     #print(filepath)
     # Parse PDB with residue numbers
     motif_seqs, motif_coords = parse_pdb_with_spec(filepath, spec)
-    #print(filepath)
-    #print(spec)
+    print(filepath)
+    print(spec)
     #print(motif_seqs)
     #print(motif_seqs)
     #print(type(motif_seqs))
