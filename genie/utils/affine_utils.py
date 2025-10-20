@@ -350,5 +350,13 @@ def rot_to_quat(
 
     k = (1./3.) * torch.stack([torch.stack(t, dim=-1) for t in k], dim=-2)
 
+    # print(f"NANCHECK: {torch.isnan(k).any()}")
+    # if torch.any(~torch.isfinite(k)):
+    #     print("Non-finite entries in k:", torch.isnan(k).sum(), torch.isinf(k).sum())
+    # assert torch.allclose(k, k.transpose(-1, -2), atol=1e-5), "Matrix not symmetric"
+
+    #Try magma backend
+    torch.backends.cuda.preferred_linalg_library("magma")
+
     _, vectors = torch.linalg.eigh(k)
     return vectors[..., -1]

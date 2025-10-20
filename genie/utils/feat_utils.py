@@ -383,16 +383,17 @@ def create_np_features_from_motif_pdb_spec(filepath):
     # Parse motif specification first
     spec = load_motif_spec(filepath)
     #print(filepath)
+    #print("SPECSPEC:")
     #print(spec)
     #print(filepath)
     # Parse PDB with residue numbers
     motif_seqs, motif_coords = parse_pdb_with_spec(filepath, spec)
-    print(filepath)
-    print(spec)
-    #print(motif_seqs)
+    #print(filepath)
+    #print(spec)
     #print(motif_seqs)
     #print(type(motif_seqs))
     #motif_aatype = np.concatenate(motif_seqs)
+    #print(motif_seqs, motif_coords)
     motif_aatype = np.array(motif_seqs[0])              # shape (104,)
     motif_aatype = np.eye(len(RESTYPES))[motif_aatype]  # one-hot encoding
     motif_atom_positions = np.concatenate(motif_coords)
@@ -427,6 +428,8 @@ def parse_pdb_with_spec(filepath, spec):
         
         # Extract motif ranges from spec
         motif_ranges = {}
+        #print("SPECSPEC")
+        #print(spec)
         for structure in spec['structures']:
             if structure['type'] == 'motif':
                 chain = structure['chain']

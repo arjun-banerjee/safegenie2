@@ -148,7 +148,10 @@ class BaseSampler(ABC):
 		"""
 		self.validate_parameters(params)
 		self.on_sample_start(params)
+		#print(f"PARAMS:{params}")
 		list_np_features = self._sample(params)
+		#print("NP FEATURES:")
+		#print(list_np_features)
 		self.on_sample_end(params, list_np_features)
 
 	def _sample(self, params):
